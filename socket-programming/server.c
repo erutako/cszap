@@ -7,16 +7,40 @@
 #include <signal.h>
 
 #define PORT 8080
-#define MAX_CLIENTS 1000
+#define MAX_CLIENTS 10
 
 int server_fd;
-int client_count = 0;
-pthread_mutex_t client_count_mutex = PTHREAD_MUTEX_INITIALIZER;
+int connection_number = 0;
+pthread_mutex_t connection_number_mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile sig_atomic_t stop_server = 0;
 
 void handle_sigint(int sig) {
     stop_server = 1;
     close(server_fd);
+}
+
+ssize_t read_all(int sock, void *buffer, size_t length) {
+    size_t total_read = 0;
+    while (total_read < length) {
+        ssize_t bytes_read = read(sock, (char *)buffer + total_read, length - total_read);
+        if (bytes_read <= 0) {
+            return bytes_read;
+        }
+        total_read += bytes_read;
+    }
+    return total_read;
+}
+
+ssize_t write_all(int sock, const void *buffer, size_t length) {
+    size_t total_written = 0;
+    while (total_written < length) {
+        ssize_t bytes_written = write(sock, (const char *)buffer + total_written, length - total_written);
+        if (bytes_written <= 0) {
+            return bytes_written;
+        }
+        total_written += bytes_written;
+    }
+    return total_written;
 }
 
 void sort(int *array, int size) {
@@ -35,38 +59,48 @@ void *handle_client(void *arg) {
     int client_socket = *(int *)arg;
     free(arg);
 
-    pthread_mutex_lock(&client_count_mutex);
-    int connection_number = ++client_count;
-    pthread_mutex_unlock(&client_count_mutex);
+    pthread_mutex_lock(&connection_number_mutex);
+    int current_connection_number = ++connection_number;
+    pthread_mutex_unlock(&connection_number_mutex);
 
-    printf("Sending connection number: %d\n", connection_number);
-    write(client_socket, &connection_number, sizeof(connection_number));
+    printf("Sending connection number: %d\n", current_connection_number);
+    if (write_all(client_socket, &current_connection_number, sizeof(current_connection_number)) <= 0) {
+        printf("Failed to send connection number\n");
+        close(client_socket);
+        return NULL;
+    }
 
-    int *random_numbers = malloc(connection_number * sizeof(int));
-    read(client_socket, random_numbers, connection_number * sizeof(int));
+    int *random_numbers = malloc(current_connection_number * sizeof(int));
+    if (read_all(client_socket, random_numbers, current_connection_number * sizeof(int)) <= 0) {
+        printf("Failed to read random numbers\n");
+        free(random_numbers);
+        close(client_socket);
+        return NULL;
+    }
 
     printf("Received random numbers: ");
-    for (int i = 0; i < connection_number; i++) {
+    for (int i = 0; i < current_connection_number; i++) {
         printf("%d ", random_numbers[i]);
     }
     printf("\n");
 
-    sort(random_numbers, connection_number);
+    sort(random_numbers, current_connection_number);
 
     printf("Sending sorted numbers: ");
-    for (int i = 0; i < connection_number; i++) {
+    for (int i = 0; i < current_connection_number; i++) {
         printf("%d ", random_numbers[i]);
     }
     printf("\n");
 
-    write(client_socket, random_numbers, connection_number * sizeof(int));
+    if (write_all(client_socket, random_numbers, current_connection_number * sizeof(int)) <= 0) {
+        printf("Failed to send sorted numbers\n");
+        free(random_numbers);
+        close(client_socket);
+        return NULL;
+    }
 
     free(random_numbers);
     close(client_socket);
-
-    pthread_mutex_lock(&client_count_mutex);
-    client_count--;
-    pthread_mutex_unlock(&client_count_mutex);
 
     return NULL;
 }
@@ -108,17 +142,6 @@ int main() {
         pthread_t thread_id;
         pthread_create(&thread_id, NULL, handle_client, new_socket);
         pthread_detach(thread_id);
-    }
-
-    // Wait for all clients to finish
-    while (1) {
-        pthread_mutex_lock(&client_count_mutex);
-        if (client_count == 0) {
-            pthread_mutex_unlock(&client_count_mutex);
-            break;
-        }
-        pthread_mutex_unlock(&client_count_mutex);
-        sleep(1);
     }
 
     close(server_fd);

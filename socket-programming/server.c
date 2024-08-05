@@ -12,7 +12,9 @@
 int server_fd;
 int connection_number = 0;
 pthread_mutex_t connection_number_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t client_count_mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile sig_atomic_t stop_server = 0;
+int active_clients = 0;
 
 void handle_sigint(int sig) {
     stop_server = 1;
@@ -59,6 +61,10 @@ void *handle_client(void *arg) {
     int client_socket = *(int *)arg;
     free(arg);
 
+    pthread_mutex_lock(&client_count_mutex);
+    active_clients++;
+    pthread_mutex_unlock(&client_count_mutex);
+
     pthread_mutex_lock(&connection_number_mutex);
     int current_connection_number = ++connection_number;
     pthread_mutex_unlock(&connection_number_mutex);
@@ -67,7 +73,7 @@ void *handle_client(void *arg) {
     if (write_all(client_socket, &current_connection_number, sizeof(current_connection_number)) <= 0) {
         printf("Failed to send connection number\n");
         close(client_socket);
-        return NULL;
+        goto cleanup;
     }
 
     int *random_numbers = malloc(current_connection_number * sizeof(int));
@@ -75,7 +81,7 @@ void *handle_client(void *arg) {
         printf("Failed to read random numbers\n");
         free(random_numbers);
         close(client_socket);
-        return NULL;
+        goto cleanup;
     }
 
     printf("Received random numbers: ");
@@ -96,11 +102,16 @@ void *handle_client(void *arg) {
         printf("Failed to send sorted numbers\n");
         free(random_numbers);
         close(client_socket);
-        return NULL;
+        goto cleanup;
     }
 
     free(random_numbers);
     close(client_socket);
+
+cleanup:
+    pthread_mutex_lock(&client_count_mutex);
+    active_clients--;
+    pthread_mutex_unlock(&client_count_mutex);
 
     return NULL;
 }
@@ -142,6 +153,11 @@ int main() {
         pthread_t thread_id;
         pthread_create(&thread_id, NULL, handle_client, new_socket);
         pthread_detach(thread_id);
+    }
+
+    // サーバーの停止を待つ
+    while (active_clients > 0) {
+        sleep(1);
     }
 
     close(server_fd);

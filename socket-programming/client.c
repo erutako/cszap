@@ -56,7 +56,7 @@ void *client_thread(void *arg) {
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
             printf("\nConnection Failed\n");
             close(sock);
-            exit(1);
+            exit(EXIT_FAILURE);
         }
 
         int connection_number;
